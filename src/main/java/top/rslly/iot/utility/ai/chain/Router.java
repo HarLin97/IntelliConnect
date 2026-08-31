@@ -167,7 +167,8 @@ public class Router {
       queueMap.put(streamChatId, queue);
       GlobalMessageContext.putChatIds(globalMessage, streamChatId, conversationChatId);
     }
-    memory = loadConversationMemory(conversationChatId);
+    ConversationMemoryPolicy memoryPolicy = conversationMemoryPolicy.resolveForProduct(productId);
+    memory = loadConversationMemory(conversationChatId, memoryPolicy);
     boolean initializeMemorySummary =
         agentMemoryService.findAllByChatId(conversationChatId).isEmpty();
     globalMessage.put(GlobalMessageContext.MEMORY_REVISION,
@@ -323,7 +324,7 @@ public class Router {
     memory.add(chatMessage);
     if (memory.size() > 6) {
       List<ModelMessage> sideEffectSnapshot =
-          conversationMemoryPolicy.recentMessagesSnapshot(memory);
+          memoryPolicy.recentMessagesSnapshot(memory);
       Map<String, Object> sideEffectMessage = new HashMap<>(globalMessage);
       sideEffectMessage.remove(GlobalMessageContext.REASONING_QUEUE);
       sideEffectMessage.put(GlobalMessageContext.MEMORY, sideEffectSnapshot);
@@ -332,7 +333,7 @@ public class Router {
         knowledgeGraphicTool.run(content, new HashMap<>(sideEffectMessage));
       }
     }
-    List<ModelMessage> compactionPrefix = conversationMemoryPolicy.compactionPrefix(memory);
+    List<ModelMessage> compactionPrefix = memoryPolicy.compactionPrefix(memory);
     boolean compacted = !compactionPrefix.isEmpty();
     if (compacted) {
       if (initializeMemorySummary) {
@@ -343,11 +344,11 @@ public class Router {
       summaryMessage.remove(GlobalMessageContext.REASONING_QUEUE);
       summaryMessage.put(GlobalMessageContext.MEMORY, compactionPrefix);
       memoryTool.run(compactionPrefix, summaryMessage);
-      conversationMemoryPolicy.retainRecentTurns(memory);
+      memoryPolicy.retainRecentTurns(memory);
     }
     if (!compacted && initializeMemorySummary
         && markMemorySummaryInProgress(conversationChatId)) {
-      List<ModelMessage> summarySnapshot = conversationMemoryPolicy.copyMessages(memory);
+      List<ModelMessage> summarySnapshot = memoryPolicy.copyMessages(memory);
       Map<String, Object> summaryMessage = new HashMap<>(globalMessage);
       summaryMessage.remove(GlobalMessageContext.REASONING_QUEUE);
       summaryMessage.put(GlobalMessageContext.MEMORY, summarySnapshot);
@@ -527,6 +528,11 @@ public class Router {
   private record RouteExecutionResult(String answer, String toolResult) {}
 
   private List<ModelMessage> loadConversationMemory(String chatId) {
+    return loadConversationMemory(chatId, conversationMemoryPolicy);
+  }
+
+  private List<ModelMessage> loadConversationMemory(String chatId,
+      ConversationMemoryPolicy memoryPolicy) {
     List<ModelMessage> memory = new ArrayList<>();
     Object memoryCache = redisUtil.get("memory" + chatId);
     if (memoryCache != null) {
@@ -545,7 +551,7 @@ public class Router {
     try {
       List<HistoryMessageEntity> recentHistory =
           historyMessageEntityService.findRecentByChatId(
-              chatId, conversationMemoryPolicy.retainedMessageCount());
+              chatId, memoryPolicy.retainedMessageCount());
       for (HistoryMessageEntity history : recentHistory) {
         if (history == null || history.getContent() == null) {
           continue;

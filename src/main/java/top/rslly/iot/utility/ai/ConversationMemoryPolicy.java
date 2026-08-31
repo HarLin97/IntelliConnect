@@ -19,8 +19,10 @@
  */
 package top.rslly.iot.utility.ai;
 
+import jakarta.annotation.Resource;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import top.rslly.iot.services.UserConfigServiceImpl;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -29,19 +31,49 @@ import java.util.List;
 /** Keeps the conversation window bounded without a model-specific tokenizer. */
 @Component
 public class ConversationMemoryPolicy {
+  public static final String CONTEXT_WINDOW_TOKENS_CONFIG_KEY = "memory.context-window-tokens";
+  public static final String SUMMARY_THRESHOLD_RATIO_CONFIG_KEY =
+      "memory.summary-threshold-ratio";
+  public static final String RECENT_TURNS_CONFIG_KEY = "memory.recent-turns";
+
+  private static final long MAX_CONTEXT_WINDOW_TOKENS = 1_000_000L;
+  private static final double MIN_SUMMARY_THRESHOLD_RATIO = 0.1D;
+  private static final int MAX_RECENT_TURNS = 100;
   private static final int MESSAGE_OVERHEAD_TOKENS = 4;
 
   private final long contextWindowTokens;
   private final double summaryThresholdRatio;
   private final int recentTurns;
 
+  @Resource
+  private UserConfigServiceImpl userConfigService;
+
   public ConversationMemoryPolicy(
-      @Value("${ai.memory.context-window-tokens:500}") long contextWindowTokens,
+      @Value("${ai.memory.context-window-tokens:2000}") long contextWindowTokens,
       @Value("${ai.memory.summary-threshold-ratio:0.5}") double summaryThresholdRatio,
       @Value("${ai.memory.recent-turns:4}") int recentTurns) {
-    this.contextWindowTokens = Math.max(1L, contextWindowTokens);
-    this.summaryThresholdRatio = Math.min(1D, Math.max(0D, summaryThresholdRatio));
-    this.recentTurns = Math.max(1, recentTurns);
+    this.contextWindowTokens = Math.max(1L,
+        Math.min(MAX_CONTEXT_WINDOW_TOKENS, contextWindowTokens));
+    this.summaryThresholdRatio =
+        Math.min(1D, Math.max(MIN_SUMMARY_THRESHOLD_RATIO, summaryThresholdRatio));
+    this.recentTurns = Math.max(1, Math.min(MAX_RECENT_TURNS, recentTurns));
+  }
+
+  /** Resolves a product-scoped snapshot without changing this singleton's defaults. */
+  public ConversationMemoryPolicy resolveForProduct(int productId) {
+    if (userConfigService == null || productId <= 0) {
+      return this;
+    }
+    long productContextWindowTokens = readLongConfig(productId,
+        CONTEXT_WINDOW_TOKENS_CONFIG_KEY, contextWindowTokens, 1L,
+        MAX_CONTEXT_WINDOW_TOKENS);
+    double productSummaryThresholdRatio = readDoubleConfig(productId,
+        SUMMARY_THRESHOLD_RATIO_CONFIG_KEY, summaryThresholdRatio,
+        MIN_SUMMARY_THRESHOLD_RATIO, 1D);
+    int productRecentTurns = readIntConfig(productId, RECENT_TURNS_CONFIG_KEY,
+        recentTurns, 1, MAX_RECENT_TURNS);
+    return new ConversationMemoryPolicy(productContextWindowTokens,
+        productSummaryThresholdRatio, productRecentTurns);
   }
 
   public long estimateTokens(List<ModelMessage> messages) {
@@ -106,6 +138,47 @@ public class ConversationMemoryPolicy {
 
   public long contextWindowTokens() {
     return contextWindowTokens;
+  }
+
+  private long readLongConfig(int productId, String key, long defaultValue, long min,
+      long max) {
+    try {
+      String value = userConfigService.getConfigValue(productId, key);
+      if (value == null || value.isBlank()) {
+        return defaultValue;
+      }
+      long parsed = Long.parseLong(value.trim());
+      return parsed >= min && parsed <= max ? parsed : defaultValue;
+    } catch (RuntimeException e) {
+      return defaultValue;
+    }
+  }
+
+  private int readIntConfig(int productId, String key, int defaultValue, int min, int max) {
+    try {
+      String value = userConfigService.getConfigValue(productId, key);
+      if (value == null || value.isBlank()) {
+        return defaultValue;
+      }
+      int parsed = Integer.parseInt(value.trim());
+      return parsed >= min && parsed <= max ? parsed : defaultValue;
+    } catch (RuntimeException e) {
+      return defaultValue;
+    }
+  }
+
+  private double readDoubleConfig(int productId, String key, double defaultValue, double min,
+      double max) {
+    try {
+      String value = userConfigService.getConfigValue(productId, key);
+      if (value == null || value.isBlank()) {
+        return defaultValue;
+      }
+      double parsed = Double.parseDouble(value.trim());
+      return Double.isFinite(parsed) && parsed >= min && parsed <= max ? parsed : defaultValue;
+    } catch (RuntimeException e) {
+      return defaultValue;
+    }
   }
 
   private long estimateText(Object value) {

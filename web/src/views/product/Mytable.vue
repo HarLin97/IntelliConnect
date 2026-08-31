@@ -226,6 +226,7 @@
       :confirm-loading="runtimeConfigSaving"
       ok-text="保存设置"
       cancel-text="取消"
+      :body-style="{ maxHeight: 'calc(100vh - 220px)', overflowY: 'auto' }"
       @ok="submitRuntimeConfig"
     >
       <a-spin :spinning="runtimeConfigLoading">
@@ -267,6 +268,36 @@
               placeholder="请输入 1 到 3600 的整数"
               @input="validateRuntimeConfigField('mcpTimeOutLimit')"
               @blur="validateRuntimeConfigField('mcpTimeOutLimit')"
+            />
+          </a-form-item>
+          <a-form-item label="记忆上下文窗口（Tokens）" name="memoryContextWindowTokens">
+            <a-input
+              v-model:value="runtimeConfigForm.memoryContextWindowTokens"
+              inputmode="numeric"
+              placeholder="请输入 1 到 1000000 的整数"
+              @input="validateRuntimeConfigField('memoryContextWindowTokens')"
+              @blur="validateRuntimeConfigField('memoryContextWindowTokens')"
+            />
+          </a-form-item>
+          <a-form-item label="记忆摘要触发阈值" name="memorySummaryThresholdRatio">
+            <div class="memory-summary-threshold-slider">
+              <a-slider
+                v-model:value="runtimeConfigForm.memorySummaryThresholdRatio"
+                :min="0.1"
+                :max="1"
+                :step="0.1"
+                :marks="memorySummaryThresholdMarks"
+                @change="validateRuntimeConfigField('memorySummaryThresholdRatio')"
+              />
+            </div>
+          </a-form-item>
+          <a-form-item label="保留最近对话轮次" name="memoryRecentTurns">
+            <a-input
+              v-model:value="runtimeConfigForm.memoryRecentTurns"
+              inputmode="numeric"
+              placeholder="请输入 1 到 100 的整数"
+              @input="validateRuntimeConfigField('memoryRecentTurns')"
+              @blur="validateRuntimeConfigField('memoryRecentTurns')"
             />
           </a-form-item>
         </a-form>
@@ -399,12 +430,20 @@ const currentRuntimeProduct = ref(null)
 const runtimeConfigForm = ref({
   agentEpochLimit: 5,
   mcpAgentEpochLimit: 5,
-  mcpTimeOutLimit: 12
+  mcpTimeOutLimit: 12,
+  memoryContextWindowTokens: 2000,
+  memorySummaryThresholdRatio: 0.5,
+  memoryRecentTurns: 4
 })
 const runtimeConfigTitle = computed(() => {
   const product = currentRuntimeProduct.value
   return product ? `运行参数 - ${product.name || ('产品 ' + product.id)}` : '运行参数'
 })
+const memorySummaryThresholdMarks = {
+  0.1: '0.1',
+  0.5: '0.5',
+  1: '1.0'
+}
 
 const runtimeConfigItems = [
   {
@@ -413,6 +452,7 @@ const runtimeConfigItems = [
     defaultValue: '5',
     min: '1',
     max: '100',
+    valueType: 'integer',
     label: 'Agent 最大轮次',
     des: 'Agent maximum epoch limit'
   },
@@ -422,6 +462,7 @@ const runtimeConfigItems = [
     defaultValue: '5',
     min: '1',
     max: '100',
+    valueType: 'integer',
     label: 'MCP Agent 最大轮次',
     des: 'MCP Agent maximum epoch limit'
   },
@@ -431,8 +472,39 @@ const runtimeConfigItems = [
     defaultValue: '12',
     min: '1',
     max: '3600',
+    valueType: 'integer',
     label: 'MCP 工具调用超时（秒）',
     des: 'MCP tool call timeout seconds'
+  },
+  {
+    field: 'memoryContextWindowTokens',
+    key: 'memory.context-window-tokens',
+    defaultValue: '2000',
+    min: '1',
+    max: '1000000',
+    valueType: 'integer',
+    label: '记忆上下文窗口（Tokens）',
+    des: 'Memory context window tokens'
+  },
+  {
+    field: 'memorySummaryThresholdRatio',
+    key: 'memory.summary-threshold-ratio',
+    defaultValue: '0.5',
+    min: '0.1',
+    max: '1',
+    valueType: 'decimal',
+    label: '记忆摘要阈值比例',
+    des: 'Memory summary threshold ratio'
+  },
+  {
+    field: 'memoryRecentTurns',
+    key: 'memory.recent-turns',
+    defaultValue: '4',
+    min: '1',
+    max: '100',
+    valueType: 'integer',
+    label: '保留最近对话轮次',
+    des: 'Recent memory turns to retain'
   }
 ]
 
@@ -441,9 +513,10 @@ const getRuntimeConfigItem = (field) => runtimeConfigItems.find((item) => item.f
 const createRuntimeConfigValidator = (field) => {
   return async (_rule, value) => {
     const item = getRuntimeConfigItem(field)
-    const parsed = parseConfigValue(value)
+    const parsed = parseConfigValue(value, item?.valueType)
     if (!item || !isConfigValueInRange(parsed, item)) {
-      return Promise.reject(new Error(`${item?.label || '配置项'}必须是 ${item?.min} 到 ${item?.max} 之间的整数`))
+      const valueDescription = item?.valueType === 'decimal' ? '数字' : '整数'
+      return Promise.reject(new Error(`${item?.label || '配置项'}必须是 ${item?.min} 到 ${item?.max} 之间的${valueDescription}`))
     }
     return Promise.resolve()
   }
@@ -829,16 +902,17 @@ const refreshMcpTools = async () => {
   }
 }
 
-const parseConfigValue = (value) => {
+const parseConfigValue = (value, valueType = 'integer') => {
   if (value === null || value === undefined) {
     return null
   }
   const normalizedValue = typeof value === 'string' ? value.trim() : value
-  if (normalizedValue === '' || !/^\d+$/.test(String(normalizedValue))) {
+  const pattern = valueType === 'decimal' ? /^\d+(?:\.\d+)?$/ : /^\d+$/
+  if (normalizedValue === '' || !pattern.test(String(normalizedValue))) {
     return null
   }
   const parsed = Number(normalizedValue)
-  if (!Number.isSafeInteger(parsed)) {
+  if (valueType === 'decimal' ? !Number.isFinite(parsed) : !Number.isSafeInteger(parsed)) {
     return null
   }
   return parsed
@@ -858,15 +932,16 @@ const getInvalidRuntimeConfigItem = () => {
 
 const showRuntimeConfigValidationError = (item) => {
   runtimeConfigFormRef.value?.validateFields([item.field]).catch(() => {})
-  message.error(`${item.label}必须是 ${item.min} 到 ${item.max} 之间的整数`)
+  const valueDescription = item.valueType === 'decimal' ? '数字' : '整数'
+  message.error(`${item.label}必须是 ${item.min} 到 ${item.max} 之间的${valueDescription}`)
 }
 
 const getRuntimeConfigValue = (item) => {
-  return parseConfigValue(runtimeConfigForm.value[item.field])
+  return parseConfigValue(runtimeConfigForm.value[item.field], item.valueType)
 }
 
 const readRuntimeConfigValue = (payload, item) => {
-  const value = parseConfigValue(payload?.data?.value ?? payload?.value)
+  const value = parseConfigValue(payload?.data?.value ?? payload?.value, item.valueType)
   return isConfigValueInRange(value, item) ? value : Number(item.defaultValue)
 }
 
@@ -877,7 +952,10 @@ const handleRuntimeConfig = async (record) => {
   runtimeConfigForm.value = {
     agentEpochLimit: 5,
     mcpAgentEpochLimit: 5,
-    mcpTimeOutLimit: 12
+    mcpTimeOutLimit: 12,
+    memoryContextWindowTokens: 2000,
+    memorySummaryThresholdRatio: 0.5,
+    memoryRecentTurns: 4
   }
 
   try {
@@ -923,7 +1001,7 @@ const submitRuntimeConfig = async () => {
         return updateUserConfig({
           productId,
           name: item.key,
-          type: 'integer',
+          type: item.valueType === 'decimal' ? 'decimal' : 'integer',
           value: String(value),
           defaultValue: item.defaultValue,
           min: item.min,
@@ -1177,6 +1255,14 @@ const handleDelete = (record) => {
     
     
 <style lang="scss" scoped>    
+.memory-summary-threshold-slider {
+  padding: 0 16px 8px;
+
+  :deep(.ant-slider) {
+    margin: 10px 0 24px;
+  }
+}
+
 .table-container {    
   .custom-table {    
     :deep(.ant-table) {    

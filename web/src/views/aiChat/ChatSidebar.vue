@@ -24,6 +24,7 @@
         show-search
         :filter-option="filterProductOption"
         :loading="loadingProducts"
+        :disabled="Boolean(deletingChatId)"
         placeholder="选择产品"
         @change="handleProductChange"
       />
@@ -32,7 +33,7 @@
     <a-button
       block
       type="primary"
-      :disabled="!modelValue"
+      :disabled="!modelValue || Boolean(deletingChatId)"
       @click="$emit('new-conversation')"
     >
       <template #icon><PlusOutlined /></template>
@@ -45,22 +46,60 @@
         <span>{{ conversations.length }}</span>
       </div>
       <div class="conversation-list">
-        <button
+        <div
           v-for="conversation in conversations"
           :key="conversation.chatId"
-          type="button"
-          class="conversation-item"
+          class="conversation-row"
           :class="{ active: conversation.chatId === activeChatId }"
-          @click="handleConversationClick(conversation)"
         >
-          <span class="conversation-copy">
-            <strong>{{ conversation.title }}</strong>
-            <span v-if="conversation.deviceName" class="device-meta">
-              {{ conversation.nickName || '未命名设备' }} · {{ conversation.deviceName }}
+          <button
+            type="button"
+            class="conversation-item"
+            :disabled="Boolean(deletingChatId)"
+            @click="handleConversationClick(conversation)"
+          >
+            <span class="conversation-copy">
+              <strong>{{ conversation.title }}</strong>
+              <span v-if="conversation.deviceName" class="device-meta">
+                {{ conversation.nickName || '未命名设备' }} · {{ conversation.deviceName }}
+              </span>
             </span>
-          </span>
-          <LoadingOutlined v-if="streamingChatIds.includes(conversation.chatId)" class="conversation-loading" spin />
-        </button>
+            <LoadingOutlined
+              v-if="streamingChatIds.includes(conversation.chatId)"
+              class="conversation-loading"
+              spin
+            />
+          </button>
+          <a-popconfirm
+            title="删除后，该对话的消息和记忆将无法恢复。确定删除？"
+            ok-text="删除"
+            cancel-text="取消"
+            :disabled="
+              loadingConversations
+                || streamingChatIds.includes(conversation.chatId)
+                || Boolean(deletingChatId)
+            "
+            @confirm="$emit('delete-conversation', conversation)"
+          >
+            <a-button
+              type="text"
+              danger
+              size="small"
+              class="conversation-delete"
+              title="删除对话"
+              :aria-label="`删除对话 ${conversation.title}`"
+              :loading="deletingChatId === conversation.chatId"
+              :disabled="
+                loadingConversations
+                  || streamingChatIds.includes(conversation.chatId)
+                  || Boolean(deletingChatId)
+              "
+              @click.stop
+            >
+              <template #icon><DeleteOutlined /></template>
+            </a-button>
+          </a-popconfirm>
+        </div>
       </div>
       <div
         v-if="memoryPreviewOpen && previewConversation?.fullContent"
@@ -149,6 +188,10 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  deletingChatId: {
+    type: String,
+    default: '',
+  },
   loadingHistory: {
     type: Boolean,
     default: false,
@@ -190,6 +233,7 @@ const emit = defineEmits([
   'product-change',
   'new-conversation',
   'select-conversation',
+  'delete-conversation',
 ])
 
 function handleProductChange(value) {
@@ -296,23 +340,19 @@ function filterProductOption(input, option) {
   padding-right: 4px;
 }
 
-.conversation-item {
+.conversation-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 30px;
   align-items: center;
-  gap: 8px;
+  gap: 2px;
   width: 100%;
-  min-height: 48px;
-  border: 0;
   border-radius: 6px;
   background: transparent;
   color: #27332f;
-  cursor: pointer;
-  padding: 9px 10px;
   text-align: left;
   transition: background 0.15s ease, color 0.15s ease;
 
-  &:hover:not(:disabled) {
+  &:hover {
     background: #f1f5f3;
   }
 
@@ -320,12 +360,32 @@ function filterProductOption(input, option) {
     background: #e4efeb;
     color: #10231d;
   }
+}
+
+.conversation-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 48px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 9px 4px 9px 10px;
+  text-align: left;
 
   &:disabled {
     cursor: not-allowed;
   }
 }
 
+.conversation-delete {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
 
 .conversation-loading {
   color: #1f7a5c;

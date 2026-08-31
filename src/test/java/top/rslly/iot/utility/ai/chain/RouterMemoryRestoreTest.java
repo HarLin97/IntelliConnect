@@ -29,6 +29,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 import top.rslly.iot.models.HistoryMessageEntity;
+import top.rslly.iot.services.UserConfigServiceImpl;
 import top.rslly.iot.services.agent.HistoryMessageEntityService;
 import top.rslly.iot.utility.RedisUtil;
 import top.rslly.iot.utility.ai.ConversationMemoryPolicy;
@@ -38,12 +39,14 @@ import top.rslly.iot.utility.ai.ModelMessageRole;
 class RouterMemoryRestoreTest {
   private RedisUtil redisUtil;
   private HistoryMessageEntityService historyMessageService;
+  private UserConfigServiceImpl userConfigService;
   private Router router;
 
   @BeforeEach
   void setUp() {
     redisUtil = org.mockito.Mockito.mock(RedisUtil.class);
     historyMessageService = org.mockito.Mockito.mock(HistoryMessageEntityService.class);
+    userConfigService = org.mockito.Mockito.mock(UserConfigServiceImpl.class);
     router = new Router();
     ReflectionTestUtils.setField(router, "redisUtil", redisUtil);
     ReflectionTestUtils.setField(router, "historyMessageEntityService", historyMessageService);
@@ -81,6 +84,29 @@ class RouterMemoryRestoreTest {
     assertEquals("history-user", result.getFirst().getContent());
     assertEquals(ModelMessageRole.ASSISTANT.value(), result.getLast().getRole());
     verify(historyMessageService).findRecentByChatId("chat-1", 8);
+  }
+
+  @Test
+  void restoresHistoryUsingProductRecentTurns() {
+    ConversationMemoryPolicy defaultPolicy = new ConversationMemoryPolicy(2000, 0.5, 4);
+    ReflectionTestUtils.setField(defaultPolicy, "userConfigService", userConfigService);
+    when(userConfigService.getConfigValue(1,
+        ConversationMemoryPolicy.CONTEXT_WINDOW_TOKENS_CONFIG_KEY)).thenReturn("");
+    when(userConfigService.getConfigValue(1,
+        ConversationMemoryPolicy.SUMMARY_THRESHOLD_RATIO_CONFIG_KEY)).thenReturn("");
+    when(userConfigService.getConfigValue(1,
+        ConversationMemoryPolicy.RECENT_TURNS_CONFIG_KEY)).thenReturn("6");
+    ConversationMemoryPolicy productPolicy = defaultPolicy.resolveForProduct(1);
+    when(redisUtil.get("memorychat-2")).thenReturn(null);
+    when(historyMessageService.findRecentByChatId("chat-2", 12)).thenReturn(List.of(
+        history("user", "history-user", 200L),
+        history("assistant", "history-assistant", 201L)));
+
+    List<ModelMessage> result = ReflectionTestUtils.invokeMethod(
+        router, "loadConversationMemory", "chat-2", productPolicy);
+
+    assertEquals(2, result.size());
+    verify(historyMessageService).findRecentByChatId("chat-2", 12);
   }
 
   private HistoryMessageEntity history(String type, String content, long time) {

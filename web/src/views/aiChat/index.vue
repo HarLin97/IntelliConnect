@@ -9,6 +9,7 @@
       :loading-conversations="loadingConversations"
       :streaming="streaming"
       :streaming-chat-ids="streamingChatIds"
+      :deleting-chat-id="deletingChatId"
       :loading-history="loadingHistory"
       :has-more-history="hasMoreHistory"
       :history-total="historyPagination.total"
@@ -20,6 +21,7 @@
       @product-change="handleProductChange"
       @new-conversation="createNewConversation"
       @select-conversation="selectConversation"
+      @delete-conversation="deleteConversation"
     />
 
     <main class="chat-main">
@@ -55,7 +57,11 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { message as antMessage } from 'ant-design-vue'
 import { getProduct } from '@/api/product'
-import { getAgentMemoryByNickName, getHistoryMessage } from '@/api/agentMemory'
+import {
+  deleteAgentMemory,
+  getAgentMemoryByNickName,
+  getHistoryMessage,
+} from '@/api/agentMemory'
 import { stopAiControlStream, streamAiControl } from '@/api/aiChat'
 import { queryKnowledgeGraphicReference } from '@/api/knowledgeGraphic'
 import { postKnowledgeChatRecall } from '@/api/productKnowledge'
@@ -74,6 +80,7 @@ const selectedFiles = ref([])
 const loadingProducts = ref(false)
 const loadingHistory = ref(false)
 const loadingConversations = ref(false)
+const deletingChatId = ref('')
 const conversationViews = new Map()
 const streamContexts = reactive(new Map())
 const streaming = computed(() => streamContexts.has(activeChatId.value))
@@ -453,6 +460,71 @@ async function selectConversation(chatId) {
   }
   resetConversationState()
   await loadHistory(1)
+}
+
+async function deleteConversation(conversation) {
+  const chatId = String(conversation?.chatId || '').trim()
+  if (!chatId || deletingChatId.value || loadingConversations.value) {
+    return
+  }
+  if (streamContexts.has(chatId)) {
+    antMessage.warning('请先停止该对话的回复生成。')
+    return
+  }
+  const productId = selectedProductId.value
+  const conversationIndex = conversations.value.findIndex((item) => item.chatId === chatId)
+  const wasActive = chatId === activeChatId.value
+  const memoryId = Number(conversation.id)
+  const hasPersistedMemory = Number.isInteger(memoryId) && memoryId > 0
+  deletingChatId.value = chatId
+  try {
+    if (hasPersistedMemory) {
+      const res = await deleteAgentMemory({ id: memoryId })
+      const payload = res.data || {}
+      if (payload.errorCode !== 200) {
+        throw new Error(payload.errorMsg || '对话删除失败')
+      }
+    }
+    conversationViews.delete(chatId)
+    if (String(selectedProductId.value) !== String(productId)) {
+      antMessage.success('对话已删除。')
+      return
+    }
+    const remainingConversations = conversations.value.filter((item) => item.chatId !== chatId)
+    conversations.value = remainingConversations
+    if (wasActive) {
+      invalidateHistoryRequest()
+      inputText.value = ''
+      selectedFiles.value = []
+      const nextConversation = remainingConversations[conversationIndex]
+        || remainingConversations[conversationIndex - 1]
+        || remainingConversations[0]
+      activeChatId.value = nextConversation?.chatId || ''
+      resetConversationState()
+    }
+    if (hasPersistedMemory) {
+      await loadConversations(productId, true)
+    }
+    if (wasActive) {
+      if (!activeChatId.value) {
+        statusText.value = '暂无对话，请新建对话。'
+        statusType.value = ''
+      } else if (restoreConversationView(activeChatId.value)) {
+        await scrollToBottom(true)
+      } else {
+        resetConversationState()
+        await loadHistory(1)
+      }
+    }
+    antMessage.success('对话已删除。')
+  } catch (error) {
+    const errorText = error.message || '对话删除失败'
+    statusText.value = errorText
+    statusType.value = 'warn'
+    antMessage.error(errorText)
+  } finally {
+    deletingChatId.value = ''
+  }
 }
 
 function createNewConversation() {

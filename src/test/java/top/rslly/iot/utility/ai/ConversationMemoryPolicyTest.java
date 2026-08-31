@@ -20,6 +20,8 @@
 package top.rslly.iot.utility.ai;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
+import top.rslly.iot.services.UserConfigServiceImpl;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -28,6 +30,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class ConversationMemoryPolicyTest {
   private final ConversationMemoryPolicy policy = new ConversationMemoryPolicy(100, 0.5, 4);
@@ -88,6 +94,76 @@ class ConversationMemoryPolicyTest {
     assertEquals(8, snapshot.size());
     assertSame(expectedFirst, snapshot.getFirst());
     assertSame(expectedLast, snapshot.getLast());
+  }
+
+  @Test
+  void resolvesValidProductMemoryConfiguration() {
+    UserConfigServiceImpl userConfigService = mock(UserConfigServiceImpl.class);
+    ConversationMemoryPolicy defaultPolicy = new ConversationMemoryPolicy(2000, 0.5, 4);
+    ReflectionTestUtils.setField(defaultPolicy, "userConfigService", userConfigService);
+    when(userConfigService.getConfigValue(7,
+        ConversationMemoryPolicy.CONTEXT_WINDOW_TOKENS_CONFIG_KEY)).thenReturn("64000");
+    when(userConfigService.getConfigValue(7,
+        ConversationMemoryPolicy.SUMMARY_THRESHOLD_RATIO_CONFIG_KEY)).thenReturn("0.75");
+    when(userConfigService.getConfigValue(7,
+        ConversationMemoryPolicy.RECENT_TURNS_CONFIG_KEY)).thenReturn("6");
+
+    ConversationMemoryPolicy resolved = defaultPolicy.resolveForProduct(7);
+
+    assertEquals(64000L, resolved.contextWindowTokens());
+    assertEquals(48000L, resolved.summaryThresholdTokens());
+    assertEquals(12, resolved.retainedMessageCount());
+    verify(userConfigService, times(1)).getConfigValue(7,
+        ConversationMemoryPolicy.CONTEXT_WINDOW_TOKENS_CONFIG_KEY);
+    verify(userConfigService, times(1)).getConfigValue(7,
+        ConversationMemoryPolicy.SUMMARY_THRESHOLD_RATIO_CONFIG_KEY);
+    verify(userConfigService, times(1)).getConfigValue(7,
+        ConversationMemoryPolicy.RECENT_TURNS_CONFIG_KEY);
+  }
+
+  @Test
+  void fallsBackToDefaultsForInvalidProductMemoryConfiguration() {
+    UserConfigServiceImpl userConfigService = mock(UserConfigServiceImpl.class);
+    ConversationMemoryPolicy defaultPolicy = new ConversationMemoryPolicy(2000, 0.5, 4);
+    ReflectionTestUtils.setField(defaultPolicy, "userConfigService", userConfigService);
+    when(userConfigService.getConfigValue(7,
+        ConversationMemoryPolicy.CONTEXT_WINDOW_TOKENS_CONFIG_KEY)).thenReturn("1000001");
+    when(userConfigService.getConfigValue(7,
+        ConversationMemoryPolicy.SUMMARY_THRESHOLD_RATIO_CONFIG_KEY)).thenReturn("0");
+    when(userConfigService.getConfigValue(7,
+        ConversationMemoryPolicy.RECENT_TURNS_CONFIG_KEY)).thenReturn("0");
+
+    ConversationMemoryPolicy resolved = defaultPolicy.resolveForProduct(7);
+
+    assertEquals(2000L, resolved.contextWindowTokens());
+    assertEquals(1000L, resolved.summaryThresholdTokens());
+    assertEquals(8, resolved.retainedMessageCount());
+  }
+
+  @Test
+  void acceptsMinimumSummaryThresholdRatio() {
+    UserConfigServiceImpl userConfigService = mock(UserConfigServiceImpl.class);
+    ConversationMemoryPolicy defaultPolicy = new ConversationMemoryPolicy(2000, 0.5, 4);
+    ReflectionTestUtils.setField(defaultPolicy, "userConfigService", userConfigService);
+    when(userConfigService.getConfigValue(7,
+        ConversationMemoryPolicy.SUMMARY_THRESHOLD_RATIO_CONFIG_KEY)).thenReturn("0.1");
+
+    ConversationMemoryPolicy resolved = defaultPolicy.resolveForProduct(7);
+
+    assertEquals(200L, resolved.summaryThresholdTokens());
+  }
+
+  @Test
+  void fallsBackWhenRecentTurnsExceedsIntegerRange() {
+    UserConfigServiceImpl userConfigService = mock(UserConfigServiceImpl.class);
+    ConversationMemoryPolicy defaultPolicy = new ConversationMemoryPolicy(2000, 0.5, 4);
+    ReflectionTestUtils.setField(defaultPolicy, "userConfigService", userConfigService);
+    when(userConfigService.getConfigValue(7,
+        ConversationMemoryPolicy.RECENT_TURNS_CONFIG_KEY)).thenReturn("2147483648");
+
+    ConversationMemoryPolicy resolved = defaultPolicy.resolveForProduct(7);
+
+    assertEquals(8, resolved.retainedMessageCount());
   }
 
   private List<ModelMessage> messages(int count) {
